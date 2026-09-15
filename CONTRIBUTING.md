@@ -21,7 +21,7 @@
 发现翻译错误或不恰当的地方？
 
 1. Fork 本仓库
-2. 在 `Antigravity-Patcher.py` 中找到 `dictionary` 字典
+2. 编辑 `translations-2.13.json` 的精确匹配译文（上游基础词典保存在 `translations.json`）；修改后在新的输出目录重新构建并验证，勿直接复用旧构建包。
 3. 修改或添加翻译条目
 4. 测试您的修改
 5. 提交 Pull Request，说明修改的原因

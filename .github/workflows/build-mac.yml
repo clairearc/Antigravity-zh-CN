@@ -1,44 +1,18 @@
-name: Build macOS Executables
-
+name: Validate Windows 2.13.0 patch
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
-
 jobs:
-  build-mac:
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        arch: [x86_64, arm64]
-    
+  validate:
+    runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller
-        
-    - name: Build with PyInstaller (Mac ${{ matrix.arch }})
-      run: |
-        pyinstaller -F --target-arch ${{ matrix.arch }} Antigravity-Patcher.py
-        pyinstaller -F --target-arch ${{ matrix.arch }} Restore.py
-        
-    - name: Rename binaries
-      run: |
-        mv dist/Antigravity-Patcher dist/Antigravity-Patcher-macOS-${{ matrix.arch }}
-        mv dist/Restore dist/Restore-macOS-${{ matrix.arch }}
-        
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: macos-${{ matrix.arch }}-binaries
-        path: |
-          dist/Antigravity-Patcher-macOS-${{ matrix.arch }}
-          dist/Restore-macOS-${{ matrix.arch }}
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m unittest -v test_patcher.py
+      - run: node --check localization.js

@@ -1,0 +1,282 @@
+"""Version-locked, staged Windows localization. Python standard library only."""
+from pathlib import Path
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import uuid
+
+VERSION = '2.13.0'
+ROOT = Path(__file__).resolve().parent
+MARKER = '.antigravity-zh-cn.json'
+BACKUP = 'app.asar.zh-cn-2.13.0.bak'
+DEFAULT_APP = Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'antigravity'
+
+
+def sha(path):
+    with extended_path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def extended_path(path):
+    """Avoid MAX_PATH when appending temporary staging directory names on Windows."""
+    path = Path(path).resolve()
+    text = str(path)
+    if sys.platform == 'win32' and not text.startswith('\\\\?\\'):
+        text = ('\\\\?\\UNC\\' + text[2:]) if text.startswith('\\\\') else ('\\\\?\\' + text)
+    return Path(text)
+
+
+class Asar:
+    def __init__(self, path):
+        self.path = extended_path(path)
+        with self.path.open('rb') as stream:
+            prefix = stream.read(16)
+            if len(prefix) != 16:
+                raise ValueError('Truncated ASAR prefix')
+            magic, size, payload, length = struct.unpack('<4I', prefix)
+            if magic != 4 or size < 8 or length > size - 8 or size > self.path.stat().st_size - 8:
+                raise ValueError('Invalid ASAR header')
+            self.header = json.loads(stream.read(length))
+        self.base = 8 + size
+        self.entries = {}
+        self._walk(self.header['files'])
+
+    def _walk(self, files, prefix=''):
+        for name, node in files.items():
+            if name in ('', '.', '..') or any(c in name for c in '/\\:'):
+                raise ValueError('Unsafe ASAR filename')
+            relative = prefix + name
+            if 'files' in node:
+                self._walk(node['files'], relative + '/')
+            elif 'link' in node:
+                raise ValueError('ASAR links require explicit support: ' + relative)
+            else:
+                self.entries[relative] = node
+
+    def read(self, relative):
+        node = self.entries[relative]
+        size = int(node['size'])
+        if size < 0:
+            raise ValueError('Negative entry size')
+        if node.get('unpacked'):
+            external = Path(str(self.path) + '.unpacked') / relative
+            root = Path(str(self.path) + '.unpacked').resolve()
+            if not external.resolve().is_relative_to(root):
+                raise ValueError('External resource escapes unpacked directory')
+            data = external.read_bytes()
+        else:
+            offset = int(node['offset'])
+            if offset < 0 or self.base + offset + size > self.path.stat().st_size:
+                raise ValueError('Entry exceeds archive: ' + relative)
+            with self.path.open('rb') as stream:
+                stream.seek(self.base + offset)
+                data = stream.read(size)
+        if len(data) != size:
+            raise ValueError('Truncated entry: ' + relative)
+        integrity = node.get('integrity', {})
+        if integrity.get('algorithm') == 'SHA256' and hashlib.sha256(data).hexdigest() != integrity.get('hash'):
+            raise ValueError('Integrity mismatch: ' + relative)
+        return data
+
+    def package(self):
+        return json.loads(self.read('package.json'))
+
+
+def replace_required(path, before, after):
+    text = path.read_text(encoding='utf-8')
+    if text.count(before) != 1:
+        raise ValueError('Expected exactly one patch anchor in ' + path.name + ': ' + before[:70])
+    path.write_text(text.replace(before, after), encoding='utf-8', newline='\n')
+
+
+MENU_MAP = {
+    'File': '文件', 'Edit': '编辑', 'View': '视图', 'Window': '窗口', 'Help': '帮助',
+    'New Window': '新建窗口', 'Close Window': '关闭窗口', 'Docs': '文档',
+    'Undo': '撤销', 'Redo': '重做', 'Cut': '剪切', 'Copy': '复制', 'Paste': '粘贴',
+    'Paste and Match Style': '粘贴并匹配样式', 'Select All': '全选', 'Delete': '删除',
+    'Minimize': '最小化', 'Zoom': '缩放', 'Close': '关闭', 'Quit': '退出',
+    'Reload': '重新加载', 'Force Reload': '强制重新加载', 'Actual Size': '实际大小',
+    'Reset Zoom': '重置缩放', 'Zoom In': '放大', 'Zoom Out': '缩小',
+    'Toggle Full Screen': '切换全屏', 'Toggle Developer Tools': '切换开发者工具',
+}
+
+
+def build(app_dir, destination):
+    destination = extended_path(destination)
+    archive = app_dir / 'resources' / 'app.asar'
+    asar = Asar(archive)
+    package = asar.package()
+    if package.get('name') != 'antigravity' or package.get('version') != VERSION:
+        raise ValueError('Only Antigravity 2.13.0 is supported; found ' + str(package.get('version')))
+    if destination.exists():
+        raise FileExistsError('Build destination already exists: ' + str(destination))
+    destination.mkdir(parents=True)
+    output = destination / 'app'
+    external_hashes = {}
+    for relative, node in asar.entries.items():
+        data = asar.read(relative)
+        target = output / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        if node.get('unpacked'):
+            external_hashes[relative] = hashlib.sha256(data).hexdigest()
+    translations = json.loads((ROOT / 'translations.json').read_text(encoding='utf-8'))
+    translations.update(json.loads((ROOT / 'translations-2.13.json').read_text(encoding='utf-8')))
+    javascript = (ROOT / 'localization.js').read_text(encoding='utf-8')
+    javascript = javascript.replace('/*__DICTIONARY__*/ {}', json.dumps(translations, ensure_ascii=False))
+    preload = output / 'dist/preload.js'
+    original = preload.read_text(encoding='utf-8')
+    if "contextBridge.exposeInMainWorld('electronNative'" not in original:
+        raise ValueError('Unexpected preload structure')
+    preload.write_text(original + '\n;\n' + javascript, encoding='utf-8', newline='\n')
+    (destination / 'localization.generated.js').write_text(javascript, encoding='utf-8', newline='\n')
+    # 2.13.0 mutates the existing menu, so buildFromTemplate-only hooks miss it.
+    menu = output / 'dist/menu.js'
+    replace_required(menu, '    electron_1.Menu.setApplicationMenu(menu);',
+                     '    translateZhCNMenu(menu);\n    electron_1.Menu.setApplicationMenu(menu);')
+    replace_required(menu, 'item.label === submenuLabel',
+                     '(item.label === submenuLabel || item.label === zhCNMenuLabels[submenuLabel])')
+    with menu.open('a', encoding='utf-8') as stream:
+        stream.write('\nconst zhCNMenuLabels = ' + json.dumps(MENU_MAP, ensure_ascii=False) + ';\n'
+                     'function translateZhCNMenu(menu) {\n'
+                     '  for (const item of menu.items || []) {\n'
+                     '    if (Object.hasOwn(zhCNMenuLabels, item.label)) item.label = zhCNMenuLabels[item.label];\n'
+                     '    if (item.submenu) translateZhCNMenu(item.submenu);\n'
+                     '  }\n}\n')
+    main = output / 'dist/main.js'
+    replace_required(main, "label: 'No agents running'", "label: '没有正在运行的智能体'")
+    replace_required(main, 'label: `Open ${electron_1.app.getName()}`', 'label: `打开 ${electron_1.app.getName()}`')
+    replace_required(main, "label: 'Quit'", "label: '退出'")
+    tray = output / 'dist/tray.js'
+    replace_required(tray,
+                     "(count > 0 ? `${count}` : 'No') +\n                    ' agent' +\n                    (count === 1 ? '' : 's') +\n                    ' running'",
+                     "(count > 0 ? `${count} 个智能体正在运行` : '没有正在运行的智能体')")
+    replace_required(output / 'dist/loadingOverlay.js', '>Loading Antigravity<', '>正在加载 Antigravity<')
+    hashes = {p.relative_to(output).as_posix(): sha(p) for p in output.rglob('*') if p.is_file()}
+    manifest = {
+        'format': 1, 'version': VERSION, 'source_sha256': sha(archive),
+        'backup_name': BACKUP, 'unpacked_sha256': external_hashes, 'files': hashes,
+        'translation_count': len(translations),
+    }
+    (destination / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(json.dumps({'version': VERSION, 'files': len(hashes), 'unpacked_files': len(external_hashes),
+                      'translations': len(translations), 'bundle': str(destination)}, ensure_ascii=False))
+
+
+def verify_bundle(bundle):
+    manifest = json.loads((bundle / 'manifest.json').read_text(encoding='utf-8'))
+    if manifest['version'] != VERSION or manifest['backup_name'] != BACKUP:
+        raise ValueError('Unsupported bundle')
+    root = extended_path(bundle / 'app')
+    actual = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
+    if actual != set(manifest['files']):
+        raise ValueError('Bundle file set does not match manifest')
+    for relative, expected in manifest['files'].items():
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root) or sha(target) != expected:
+            raise ValueError('Bundle hash mismatch: ' + relative)
+    return manifest
+
+
+def require_closed():
+    if sys.platform == 'win32':
+        result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq Antigravity.exe', '/FO', 'CSV', '/NH'],
+                                capture_output=True, check=True)
+        if b'antigravity.exe' in result.stdout.lower():
+            raise RuntimeError('Exit Antigravity normally before installing/restoring. No processes were stopped.')
+
+
+def install(app_dir, bundle):
+    if sys.platform != 'win32':
+        raise ValueError('This adaptation is validated for Windows only')
+    require_closed()
+    manifest = verify_bundle(bundle)
+    resources = extended_path(app_dir / 'resources')
+    archive, app, backup = resources / 'app.asar', resources / 'app', resources / BACKUP
+    if app.exists() or backup.exists() or (resources / 'app.asar.disabled').exists():
+        raise FileExistsError('Existing patch/app/backup detected; restore or inspect before installing')
+    if sha(archive) != manifest['source_sha256']:
+        raise ValueError('Official ASAR has changed. Rebuild against the current installation.')
+    for relative, expected in manifest['unpacked_sha256'].items():
+        source = resources / 'app.asar.unpacked' / relative
+        if not source.resolve().is_relative_to((resources / 'app.asar.unpacked').resolve()) or sha(source) != expected:
+            raise ValueError('Official external resource has changed: ' + relative)
+    stage = resources / ('app.zh-cn-stage-' + uuid.uuid4().hex)
+    try:
+        shutil.copytree(extended_path(bundle / 'app'), stage)
+    except BaseException:
+        # This is the new UUID directory created by this invocation only.
+        if stage.parent == resources and stage.exists() and not stage.is_symlink():
+            shutil.rmtree(stage)
+        raise
+    # Verify the copy before switching Electron's app resolution.
+    for relative, expected in manifest['files'].items():
+        if sha(stage / relative) != expected:
+            raise ValueError('Staging copy mismatch: ' + relative)
+    (stage / MARKER).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+    stage.rename(app)
+    try:
+        archive.rename(backup)
+    except BaseException:
+        app.rename(stage)
+        raise
+    print('Installed 2.13.0 zh-CN. Restart Antigravity when current work is finished. No processes were stopped.')
+    print('Original archive: ' + str(backup))
+
+
+def restore(app_dir):
+    require_closed()
+    resources = extended_path(app_dir / 'resources')
+    app, archive, backup = resources / 'app', resources / 'app.asar', resources / BACKUP
+    if not app.exists() and archive.exists() and not backup.exists():
+        print('Already original; nothing changed.')
+        return
+    manifest = json.loads((app / MARKER).read_text(encoding='utf-8'))
+    if manifest.get('version') != VERSION or manifest.get('backup_name') != BACKUP:
+        raise ValueError('Unrecognized patch marker')
+    if sha(backup) != manifest['source_sha256']:
+        raise ValueError('Original backup hash mismatch')
+    preserved = resources / ('app.zh-cn-restored-' + uuid.uuid4().hex)
+    app.rename(preserved)
+    try:
+        if not archive.exists():
+            backup.rename(archive)
+        # If an updater provided a new ASAR, retain that ASAR and the old backup.
+    except BaseException:
+        preserved.rename(app)
+        raise
+    print('Restored. Existing official updates were preserved. Restart when convenient.')
+    print('Patch preserved at: ' + str(preserved))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--app-dir', type=Path, default=DEFAULT_APP)
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument('--build', type=Path, metavar='BUNDLE')
+    actions.add_argument('--install', type=Path, metavar='BUNDLE')
+    actions.add_argument('--verify', type=Path, metavar='BUNDLE')
+    actions.add_argument('--restore', action='store_true')
+    args = parser.parse_args()
+    if args.build:
+        build(args.app_dir.resolve(), args.build.resolve())
+    elif args.install:
+        install(args.app_dir.resolve(), args.install.resolve())
+    elif args.verify:
+        manifest = verify_bundle(args.verify.resolve())
+        print('Verified ' + str(len(manifest['files'])) + ' files')
+    else:
+        restore(args.app_dir.resolve())
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print('ERROR: ' + str(error), file=sys.stderr)
+        sys.exit(1)
