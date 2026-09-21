@@ -1,4 +1,4 @@
-// Antigravity zh-CN 2.13.0 — exact UI text matching; no IPC/network changes.
+// Antigravity zh-CN 2.15.1 — exact UI text matching; no IPC/network changes.
 (() => {
   'use strict';
   if (globalThis.__antigravityZhCN) return;
@@ -80,7 +80,7 @@
       attributes: true, attributeFilter: ['placeholder', 'title', 'aria-label'],
     });
   }
-  globalThis.__antigravityZhCN = {version: '2.13.0', translate};
+  globalThis.__antigravityZhCN = {version: '2.15.1', translate};
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once: true});
   else start();
 })();

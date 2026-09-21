@@ -33,7 +33,7 @@ const bundle = process.argv[2];
     await page.waitForFunction(() => document.querySelector('#dynamic').textContent === '浏览器设置已迁移');
     assert.equal(await page.locator('#dynamic').getAttribute('title'), '设置');
     await page.evaluate(source); // Duplicate initialization is harmless.
-    assert.equal(await page.evaluate(() => globalThis.__antigravityZhCN.version), '2.13.0');
+    assert.equal(await page.evaluate(() => globalThis.__antigravityZhCN.version), '2.15.1');
     // A mocked native menu verifies translated labels retain item identity/actions.
     const fileMenu={label:'File',submenu:{items:[],insert(i,x){this.items.splice(i,0,x);}}};
     const helpMenu={label:'Help',submenu:{items:[],insert(i,x){this.items.splice(i,0,x);}}};

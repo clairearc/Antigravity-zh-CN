@@ -10,10 +10,10 @@ import subprocess
 import sys
 import uuid
 
-VERSION = '2.13.0'
+VERSION = '2.15.1'
 ROOT = Path(__file__).resolve().parent
 MARKER = '.antigravity-zh-cn.json'
-BACKUP = 'app.asar.zh-cn-2.13.0.bak'
+BACKUP = f'app.asar.zh-cn-{VERSION}.bak'
 DEFAULT_APP = Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'antigravity'
 
 
@@ -64,8 +64,11 @@ class Asar:
         if size < 0:
             raise ValueError('Negative entry size')
         if node.get('unpacked'):
-            external = Path(str(self.path) + '.unpacked') / relative
-            root = Path(str(self.path) + '.unpacked').resolve()
+            unpacked_dir = self.path.parent / 'app.asar.unpacked'
+            if not unpacked_dir.exists():
+                unpacked_dir = Path(str(self.path) + '.unpacked')
+            external = unpacked_dir / relative
+            root = unpacked_dir.resolve()
             if not external.resolve().is_relative_to(root):
                 raise ValueError('External resource escapes unpacked directory')
             data = external.read_bytes()
@@ -109,10 +112,18 @@ MENU_MAP = {
 def build(app_dir, destination):
     destination = extended_path(destination)
     archive = app_dir / 'resources' / 'app.asar'
+    if not archive.exists():
+        bak = app_dir / 'resources' / 'app.asar.official.bak'
+        if bak.exists():
+            archive = bak
+        else:
+            raise FileNotFoundError(f'Neither app.asar nor app.asar.official.bak found in {app_dir / "resources"}')
     asar = Asar(archive)
     package = asar.package()
-    if package.get('name') != 'antigravity' or package.get('version') != VERSION:
-        raise ValueError('Only Antigravity 2.13.0 is supported; found ' + str(package.get('version')))
+    if package.get('name') != 'antigravity':
+        raise ValueError(f'Expected package "antigravity", found "{package.get("name")}"')
+    detected_version = package.get('version') or VERSION
+    backup_name = f'app.asar.zh-cn-{detected_version}.bak'
     if destination.exists():
         raise FileExistsError('Build destination already exists: ' + str(destination))
     destination.mkdir(parents=True)
@@ -126,7 +137,8 @@ def build(app_dir, destination):
         if node.get('unpacked'):
             external_hashes[relative] = hashlib.sha256(data).hexdigest()
     translations = json.loads((ROOT / 'translations.json').read_text(encoding='utf-8'))
-    translations.update(json.loads((ROOT / 'translations-2.13.json').read_text(encoding='utf-8')))
+    if (ROOT / 'translations-2.13.json').exists():
+        translations.update(json.loads((ROOT / 'translations-2.13.json').read_text(encoding='utf-8')))
     javascript = (ROOT / 'localization.js').read_text(encoding='utf-8')
     javascript = javascript.replace('/*__DICTIONARY__*/ {}', json.dumps(translations, ensure_ascii=False))
     preload = output / 'dist/preload.js'
@@ -135,7 +147,7 @@ def build(app_dir, destination):
         raise ValueError('Unexpected preload structure')
     preload.write_text(original + '\n;\n' + javascript, encoding='utf-8', newline='\n')
     (destination / 'localization.generated.js').write_text(javascript, encoding='utf-8', newline='\n')
-    # 2.13.0 mutates the existing menu, so buildFromTemplate-only hooks miss it.
+    # Menu translation
     menu = output / 'dist/menu.js'
     replace_required(menu, '    electron_1.Menu.setApplicationMenu(menu);',
                      '    translateZhCNMenu(menu);\n    electron_1.Menu.setApplicationMenu(menu);')
@@ -157,21 +169,39 @@ def build(app_dir, destination):
                      "(count > 0 ? `${count}` : 'No') +\n                    ' agent' +\n                    (count === 1 ? '' : 's') +\n                    ' running'",
                      "(count > 0 ? `${count} 个智能体正在运行` : '没有正在运行的智能体')")
     replace_required(output / 'dist/loadingOverlay.js', '>Loading Antigravity<', '>正在加载 Antigravity<')
+    wizard = output / 'dist/ideInstall/wizardHtml.js'
+    if wizard.exists():
+        wizard_text = wizard.read_text(encoding='utf-8')
+        replacements = [
+            ('<title>Welcome to Antigravity</title>', '<title>欢迎使用 Antigravity</title>'),
+            ('Setting up…', '正在设置…'),
+            ('<h1>Welcome to the new Antigravity!</h1>', '<h1>欢迎使用全新 Antigravity！</h1>'),
+            ("Antigravity has been redesigned to put agents first with new capabilities. If you'd still like a code editor, you can download it as a separate app named <b>Antigravity IDE</b>.",
+             'Antigravity 经过全新设计，以智能体为核心并提供全新能力。如果您仍需要代码编辑器，可单独下载名为 <b>Antigravity IDE</b> 的独立应用。'),
+            ('<span>Download the Antigravity IDE</span>', '<span>下载 Antigravity IDE</span>'),
+            ('<button class="btn-primary" id="btn-skip">Explore the new Antigravity</button>', '<button class="btn-primary" id="btn-skip">探索全新 Antigravity</button>')
+        ]
+        for src, dst in replacements:
+            if src in wizard_text:
+                wizard_text = wizard_text.replace(src, dst)
+        wizard.write_text(wizard_text, encoding='utf-8', newline='\n')
     hashes = {p.relative_to(output).as_posix(): sha(p) for p in output.rglob('*') if p.is_file()}
     manifest = {
-        'format': 1, 'version': VERSION, 'source_sha256': sha(archive),
-        'backup_name': BACKUP, 'unpacked_sha256': external_hashes, 'files': hashes,
+        'format': 1, 'version': detected_version, 'source_sha256': sha(archive),
+        'backup_name': backup_name, 'unpacked_sha256': external_hashes, 'files': hashes,
         'translation_count': len(translations),
     }
     (destination / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(json.dumps({'version': VERSION, 'files': len(hashes), 'unpacked_files': len(external_hashes),
+    print(json.dumps({'version': detected_version, 'files': len(hashes), 'unpacked_files': len(external_hashes),
                       'translations': len(translations), 'bundle': str(destination)}, ensure_ascii=False))
 
 
 def verify_bundle(bundle):
     manifest = json.loads((bundle / 'manifest.json').read_text(encoding='utf-8'))
-    if manifest['version'] != VERSION or manifest['backup_name'] != BACKUP:
-        raise ValueError('Unsupported bundle')
+    bundle_version = manifest.get('version')
+    expected_backup = manifest.get('backup_name', f'app.asar.zh-cn-{bundle_version}.bak')
+    if not bundle_version or manifest.get('backup_name') != expected_backup:
+        raise ValueError('Unsupported bundle manifest')
     root = extended_path(bundle / 'app')
     actual = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
     if actual != set(manifest['files']):
@@ -196,10 +226,14 @@ def install(app_dir, bundle):
         raise ValueError('This adaptation is validated for Windows only')
     require_closed()
     manifest = verify_bundle(bundle)
+    target_version = manifest.get('version', VERSION)
+    backup_name = manifest.get('backup_name', f'app.asar.zh-cn-{target_version}.bak')
     resources = extended_path(app_dir / 'resources')
-    archive, app, backup = resources / 'app.asar', resources / 'app', resources / BACKUP
-    if app.exists() or backup.exists() or (resources / 'app.asar.disabled').exists():
-        raise FileExistsError('Existing patch/app/backup detected; restore or inspect before installing')
+    archive, app, backup = resources / 'app.asar', resources / 'app', resources / backup_name
+    if backup.exists() or (resources / 'app.asar.disabled').exists():
+        raise FileExistsError('Existing backup/disabled archive detected; restore or inspect before installing')
+    if app.exists():
+        shutil.rmtree(app)
     if sha(archive) != manifest['source_sha256']:
         raise ValueError('Official ASAR has changed. Rebuild against the current installation.')
     for relative, expected in manifest['unpacked_sha256'].items():
@@ -225,20 +259,31 @@ def install(app_dir, bundle):
     except BaseException:
         app.rename(stage)
         raise
-    print('Installed 2.13.0 zh-CN. Restart Antigravity when current work is finished. No processes were stopped.')
+    print(f'Installed {target_version} zh-CN. Restart Antigravity when current work is finished. No processes were stopped.')
     print('Original archive: ' + str(backup))
 
 
 def restore(app_dir):
     require_closed()
     resources = extended_path(app_dir / 'resources')
-    app, archive, backup = resources / 'app', resources / 'app.asar', resources / BACKUP
-    if not app.exists() and archive.exists() and not backup.exists():
+    app, archive = resources / 'app', resources / 'app.asar'
+    if not app.exists() and archive.exists():
         print('Already original; nothing changed.')
         return
-    manifest = json.loads((app / MARKER).read_text(encoding='utf-8'))
-    if manifest.get('version') != VERSION or manifest.get('backup_name') != BACKUP:
+    manifest_file = app / MARKER
+    if not manifest_file.exists():
         raise ValueError('Unrecognized patch marker')
+    manifest = json.loads(manifest_file.read_text(encoding='utf-8'))
+    target_version = manifest.get('version', VERSION)
+    backup_name = manifest.get('backup_name', f'app.asar.zh-cn-{target_version}.bak')
+    backup = resources / backup_name
+    if not backup.exists():
+        for candidate in [resources / 'app.asar.official.bak', resources / BACKUP]:
+            if candidate.exists():
+                backup = candidate
+                break
+    if not backup.exists():
+        raise FileNotFoundError(f'Original backup not found: {backup_name}')
     if sha(backup) != manifest['source_sha256']:
         raise ValueError('Original backup hash mismatch')
     preserved = resources / ('app.zh-cn-restored-' + uuid.uuid4().hex)
@@ -250,7 +295,7 @@ def restore(app_dir):
     except BaseException:
         preserved.rename(app)
         raise
-    print('Restored. Existing official updates were preserved. Restart when convenient.')
+    print(f'Restored {target_version}. Existing official updates were preserved. Restart when convenient.')
     print('Patch preserved at: ' + str(preserved))
 
 

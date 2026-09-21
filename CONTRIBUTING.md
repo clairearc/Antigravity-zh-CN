@@ -8,7 +8,7 @@
 
 如果您发现了 bug 或有功能建议，请：
 
-1. 先搜索 [Issues](https://github.com/MIMICTE/Antigravity-zh-CN/issues) 确认问题是否已存在
+1. 先搜索 [Issues](https://github.com/clairearc/Antigravity-zh-CN/issues) 确认问题是否已存在
 2. 如果不存在，创建新的 Issue，并提供：
    - 清晰的问题描述
    - 复现步骤（如果是 bug）
@@ -21,7 +21,7 @@
 发现翻译错误或不恰当的地方？
 
 1. Fork 本仓库
-2. 编辑 `translations-2.13.json` 的精确匹配译文（上游基础词典保存在 `translations.json`）；修改后在新的输出目录重新构建并验证，勿直接复用旧构建包。
+2. 编辑 `translations.json` 的精确匹配译文；修改后在新的输出目录重新构建并验证，勿直接复用旧构建包。
 3. 修改或添加翻译条目
 4. 测试您的修改
 5. 提交 Pull Request，说明修改的原因
@@ -64,7 +64,7 @@
 
 在提交 PR 前，请确保：
 
-1. 执行汉化脚本无报错
+1. 执行单元测试 `python test_patcher.py` 均通过
 2. Antigravity 能正常启动
 3. 主要界面元素已正确汉化
 4. 还原脚本能正常工作
@@ -79,7 +79,3 @@
 ## 许可
 
 通过贡献代码，您同意您的贡献将在 MIT 许可证下发布。
-
-## 问题？
-
-如有任何疑问，欢迎在 [Discussions](https://github.com/MIMICTE/Antigravity-zh-CN/discussions) 中讨论。
