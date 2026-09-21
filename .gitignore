@@ -49,3 +49,25 @@ desktop.ini
 *.bak
 *.backup
 *.tmp
+
+# Secrets / local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Credentials / local data
+credentials.json
+secrets.json
+*.session
+*.sqlite
+*.sqlite3
+*.db
+
+# Local AI/tool state
+.claude/
+.codex/
+.antigravity/
